@@ -27,6 +27,6 @@ fi
 # ── Step 3: 새 앱 실행 ──────────────────────────────
 echo "> 새 앱을 실행합니다."
 cd $WORK_DIR
-nohup java -Xmx512m -jar app.jar > app.log 2>&1
+nohup java -Xmx512m -jar app.jar > app.log 2>&1 &
 
 echo "==== 배포 완료 ===="
