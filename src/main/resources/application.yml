@@ -1,11 +1,11 @@
 spring:
   application:
-    name: demo
+    name: agilemvp-backend
   profiles:
     active: local
 
 mybatis:
   mapper-locations: classpath:mapper/**/*.xml
-  type-aliases-package: com.example.demo.domain
+  type-aliases-package: cop.kbds.agilemvp
   configuration:
     map-underscore-to-camel-case: true

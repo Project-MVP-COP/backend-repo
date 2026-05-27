@@ -2516,13 +2516,10 @@ function getVizRange() {
   }
 }
 
-function renderViz() {
+async function renderViz() {
   const range = getVizRange();
-  const rangeData = transactions.filter(t =>
-    t.status === '승인' && t.transactionDate >= range.start && t.transactionDate <= range.end
-  );
 
-  // ── Stats ──
+  // ── Stats (client-side from loaded transactions) ──
   const thisMonthData = transactions.filter(t => t.status === '승인' && t.transactionDate.startsWith('2026-03'));
   const lastMonthData = transactions.filter(t => t.status === '승인' && t.transactionDate.startsWith('2026-02'));
   const thisTotal = thisMonthData.reduce((s,t) => s+t.amount, 0);
@@ -2532,7 +2529,6 @@ function renderViz() {
   const daysInMonth = 31;
   const dailyAvg = Math.round(thisTotal / daysInMonth);
 
-  // Top category this month
   const catMap = {};
   thisMonthData.forEach(t => catMap[t.categoryName] = (catMap[t.categoryName]||0) + t.amount);
   const topCat = Object.entries(catMap).sort((a,b)=>b[1]-a[1])[0];
@@ -2547,21 +2543,26 @@ function renderViz() {
     ? `<span class="badge" style="background:${CATEGORY_COLORS[topCat[0]]}">${topCat[0]}</span>`
     : '-';
 
+  // ── Fetch chart data from APIs ──
+  const dateParams = `dateStart=${range.start}&dateEnd=${range.end}`;
+  const [donutData, barData, lineData] = await Promise.all([
+    fetch(`/api/charts/donut?${dateParams}`).then(r => r.json()),
+    fetch('/api/charts/bar').then(r => r.json()),
+    fetch(`/api/charts/line?${dateParams}`).then(r => r.json()),
+  ]);
+
   // ── Pie Chart ──
-  const catData = {};
-  rangeData.forEach(t => catData[t.categoryName] = (catData[t.categoryName]||0) + t.amount);
-  const catEntries = Object.entries(catData).sort((a,b)=>b[1]-a[1]);
-  const catTotal   = catEntries.reduce((s,[,v])=>s+v, 0);
+  const catTotal = donutData.reduce((s, d) => s + d.value, 0);
 
   destroyChart('pieChart');
   const pieCtx = document.getElementById('pieChart').getContext('2d');
   charts.pieChart = new Chart(pieCtx, {
     type: 'doughnut',
     data: {
-      labels: catEntries.map(([k])=>k),
+      labels: donutData.map(d => d.name),
       datasets: [{
-        data: catEntries.map(([,v])=>v),
-        backgroundColor: catEntries.map(([k])=>CATEGORY_COLORS[k]||'#64748b'),
+        data: donutData.map(d => d.value),
+        backgroundColor: donutData.map(d => d.color || '#64748b'),
         borderWidth: 2,
         borderColor: '#1E1E1E',
         hoverOffset: 6,
@@ -2581,39 +2582,28 @@ function renderViz() {
     }
   });
 
-  // Pie Legend
-  document.getElementById('pie-legend').innerHTML = catEntries.map(([k,v]) => `
+  document.getElementById('pie-legend').innerHTML = donutData.map(d => `
     <div class="pie-legend-item">
-      <div class="pie-legend-dot" style="background:${CATEGORY_COLORS[k]||'#64748b'}"></div>
-      <span class="pie-legend-name">${k}</span>
-      <span class="pie-legend-amount">${fmt(v)}원</span>
-      <span class="pie-legend-pct">${((v/catTotal)*100).toFixed(1)}%</span>
+      <div class="pie-legend-dot" style="background:${d.color || '#64748b'}"></div>
+      <span class="pie-legend-name">${d.name}</span>
+      <span class="pie-legend-amount">${fmt(d.value)}원</span>
+      <span class="pie-legend-pct">${catTotal ? ((d.value/catTotal)*100).toFixed(1) : 0}%</span>
     </div>
   `).join('');
 
-  // ── Monthly Bar Chart (last 6 months) ──
-  const months = [];
-  const base = new Date('2026-03-01');
-  for (let i = 5; i >= 0; i--) {
-    const d = new Date(base);
-    d.setMonth(d.getMonth() - i);
-    months.push(d.toISOString().slice(0,7));
-  }
-  const monthlyTotals = months.map(m =>
-    transactions.filter(t => t.status==='승인' && t.transactionDate.startsWith(m)).reduce((s,t)=>s+t.amount,0)
-  );
-
+  // ── Monthly Bar Chart ──
+  const lastIdx = barData.length - 1;
   destroyChart('monthlyChart');
   const mCtx = document.getElementById('monthlyChart').getContext('2d');
   charts.monthlyChart = new Chart(mCtx, {
     type: 'bar',
     data: {
-      labels: months.map(m => m.replace('-','년 ') + '월'),
+      labels: barData.map(d => d.month.replace('-', '년 ') + '월'),
       datasets: [{
         label: '월별 지출',
-        data: monthlyTotals,
-        backgroundColor: months.map((_,i) => i===5 ? 'rgba(255,204,0,0.8)' : 'rgba(255,204,0,0.25)'),
-        borderColor:     months.map((_,i) => i===5 ? '#FFCC00' : 'rgba(255,204,0,0.5)'),
+        data: barData.map(d => d.amount),
+        backgroundColor: barData.map((_,i) => i===lastIdx ? 'rgba(255,204,0,0.8)' : 'rgba(255,204,0,0.25)'),
+        borderColor:     barData.map((_,i) => i===lastIdx ? '#FFCC00' : 'rgba(255,204,0,0.5)'),
         borderWidth: 1,
         borderRadius: 6,
       }]
@@ -2633,19 +2623,7 @@ function renderViz() {
   });
 
   // ── Daily Cumulative Chart ──
-  const days = [];
-  const s = new Date(range.start);
-  const e = new Date(range.end);
-  for (let d = new Date(s); d <= e; d.setDate(d.getDate()+1)) {
-    days.push(d.toISOString().slice(0,10));
-  }
-
-  let cumulative = 0;
-  const dailyCumData = days.map(day => {
-    const dayTotal = rangeData.filter(t => t.transactionDate === day).reduce((s,t)=>s+t.amount, 0);
-    cumulative += dayTotal;
-    return { x: day, y: cumulative };
-  });
+  const dailyCumData = lineData.map(d => ({ x: d.date, y: d.cumulativeAmount }));
 
   destroyChart('dailyChart');
   const dCtx = document.getElementById('dailyChart').getContext('2d');
